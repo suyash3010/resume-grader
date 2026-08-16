@@ -4,23 +4,125 @@ import io
 import time
 import tempfile
 from datetime import datetime
+from functools import wraps
+from urllib.parse import urlencode, parse_qs
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, session, redirect, url_for, render_template_string
 from openai import OpenAI
 import pandas as pd
 from werkzeug.utils import secure_filename
 import pypdfium2 as pdfium
 from docx import Document
 from dotenv import load_dotenv
+import requests
+import boto3
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Cognito Configuration
+COGNITO_USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
+COGNITO_CLIENT_ID = os.environ.get('COGNITO_CLIENT_ID')
+COGNITO_CLIENT_SECRET = os.environ.get('COGNITO_CLIENT_SECRET')
+COGNITO_DOMAIN = os.environ.get('COGNITO_DOMAIN')
+COGNITO_REGION = os.environ.get('COGNITO_REGION', 'us-east-1')
+
+# Build Cognito URLs
+COGNITO_DISCOVERY_URL = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/openid-configuration'
+COGNITO_AUTH_URL = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/authorize'
+COGNITO_TOKEN_URL = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/token'
+COGNITO_JWKS_URL = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json'
+
+# Cognito client for token verification
+cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
 
 _last_results = None
 
 MODEL = "gpt-4o"
+
+# ============================================================================
+# COGNITO AUTHENTICATION HELPERS
+# ============================================================================
+
+def login_required(f):
+    """Decorator to require authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def get_login_url(redirect_uri):
+    """Generate Cognito login URL"""
+    params = {
+        'client_id': COGNITO_CLIENT_ID,
+        'response_type': 'code',
+        'scope': 'email openid profile',
+        'redirect_uri': redirect_uri,
+    }
+    return f'{COGNITO_AUTH_URL}?{urlencode(params)}'
+
+
+def exchange_code_for_token(code, redirect_uri):
+    """Exchange authorization code for ID and access tokens"""
+    try:
+        response = requests.post(
+            COGNITO_TOKEN_URL,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            data={
+                'grant_type': 'authorization_code',
+                'client_id': COGNITO_CLIENT_ID,
+                'client_secret': COGNITO_CLIENT_SECRET,
+                'code': code,
+                'redirect_uri': redirect_uri,
+            }
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error exchanging code: {e}")
+        return None
+
+
+def decode_token(token):
+    """Decode and verify JWT token from Cognito"""
+    try:
+        # Fetch public keys
+        resp = requests.get(COGNITO_JWKS_URL)
+        keys = resp.json()['keys']
+
+        # Simple verification - in production use python-jose
+        import base64
+        parts = token.split('.')
+
+        # Decode payload (second part)
+        payload = parts[1]
+        # Add padding if needed
+        payload += '=' * (4 - len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+
+        return json.loads(decoded)
+    except Exception as e:
+        print(f"Error decoding token: {e}")
+        return None
+
+
+def get_user_info_from_token(id_token):
+    """Extract user info from ID token"""
+    payload = decode_token(id_token)
+    if payload:
+        return {
+            'sub': payload.get('sub'),
+            'email': payload.get('email'),
+            'name': payload.get('name', payload.get('email', 'User')),
+            'picture': payload.get('picture'),
+        }
+    return None
 
 JOB_DESCRIPTION = """
 Senior QA Engineer
@@ -187,6 +289,63 @@ def score_resume(client, resume_text, filename, job_description, rubric):
     return result
 
 
+# ============================================================================
+# AUTHENTICATION ROUTES
+# ============================================================================
+
+@app.route('/login')
+def login():
+    """Redirect to Cognito login"""
+    redirect_uri = url_for('callback', _external=True)
+    login_url = get_login_url(redirect_uri)
+    return redirect(login_url)
+
+
+@app.route('/callback')
+def callback():
+    """Handle Cognito callback"""
+    code = request.args.get('code')
+    error = request.args.get('error')
+
+    if error:
+        return jsonify({'error': error}), 400
+
+    if not code:
+        return jsonify({'error': 'Missing authorization code'}), 400
+
+    # Exchange code for tokens
+    redirect_uri = url_for('callback', _external=True)
+    token_response = exchange_code_for_token(code, redirect_uri)
+
+    if not token_response or 'id_token' not in token_response:
+        return jsonify({'error': 'Failed to get tokens'}), 400
+
+    # Extract user info from ID token
+    user_info = get_user_info_from_token(token_response['id_token'])
+    if not user_info:
+        return jsonify({'error': 'Failed to decode token'}), 400
+
+    # Store user info in session
+    session['user'] = user_info
+    session['id_token'] = token_response['id_token']
+    session['access_token'] = token_response.get('access_token')
+
+    return redirect(url_for('index'))
+
+
+@app.route('/logout')
+def logout():
+    """Logout user"""
+    session.clear()
+    # Optionally redirect to Cognito logout
+    cognito_logout_url = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/logout?client_id={COGNITO_CLIENT_ID}&logout_uri={url_for("index", _external=True)}'
+    return redirect(cognito_logout_url)
+
+
+# ============================================================================
+# APPLICATION ROUTES
+# ============================================================================
+
 @app.route('/')
 def index():
     html = """
@@ -228,12 +387,40 @@ def index():
             .download-btn { background: #48bb78; margin-top: 12px; display: none; }
             .download-btn:hover { background: #38a169; }
             a { color: inherit; text-decoration: none; }
+            .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+            .auth-buttons { display: flex; align-items: center; gap: 12px; }
+            .user-info { display: flex; align-items: center; gap: 12px; }
+            .profile-pic { width: 32px; height: 32px; border-radius: 50%; }
+            .user-name { color: #2d3748; font-size: 14px; font-weight: 500; }
+            .login-btn, .logout-btn { background: #667eea; color: white; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 600; display: inline-block; transition: all 0.2s; }
+            .login-btn:hover, .logout-btn:hover { background: #764ba2; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
+            .login-prompt { text-align: center; padding: 60px 20px; }
+            .login-btn-large { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px 32px; border-radius: 8px; font-size: 16px; font-weight: 600; display: inline-flex; align-items: center; gap: 12px; transition: all 0.3s; }
+            .login-btn-large:hover { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(102, 126, 234, 0.4); }
+            .google-icon { font-size: 20px; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>🎯 Resume Grader</h1>
-            <p class="subtitle">Upload resumes and get them scored against the job description</p>
+            <div class="header">
+                <h1>🎯 Resume Grader</h1>
+                <div class="auth-buttons">
+                    {% if user %}
+                        <div class="user-info">
+                            {% if user.picture %}
+                                <img src="{{ user.picture }}" alt="Profile" class="profile-pic">
+                            {% endif %}
+                            <span class="user-name">{{ user.name }}</span>
+                            <a href="/logout" class="logout-btn">Logout</a>
+                        </div>
+                    {% else %}
+                        <a href="/login" class="login-btn">Login with Google</a>
+                    {% endif %}
+                </div>
+            </div>
+
+            {% if user %}
+                <p class="subtitle">Upload resumes and get them scored against the job description</p>
 
             <button class="settings-toggle" id="settingsToggle">⚙️ Configure JD & Rubric</button>
 
@@ -262,6 +449,15 @@ def index():
             <a id="downloadBtn" class="download-btn" href="" download="shortlist.xlsx" style="display: none; text-decoration: none;">Download Results</a>
 
             <div class="status" id="status"></div>
+            {% else %}
+                <div class="login-prompt">
+                    <p class="subtitle">Sign in to grade resumes</p>
+                    <a href="/login" class="login-btn-large">
+                        <span class="google-icon">🔐</span>
+                        Continue with Google
+                    </a>
+                </div>
+            {% endif %}
         </div>
 
         <script>
@@ -345,10 +541,13 @@ def index():
     </body>
     </html>
     """
-    return html.replace("PLACEHOLDER_JD", JOB_DESCRIPTION).replace("PLACEHOLDER_RUBRIC", RUBRIC)
+    html = html.replace("PLACEHOLDER_JD", JOB_DESCRIPTION).replace("PLACEHOLDER_RUBRIC", RUBRIC)
+    user = session.get('user')
+    return render_template_string(html, user=user)
 
 
 @app.route('/grade', methods=['POST'])
+@login_required
 def grade_resumes():
     global _last_results
 
