@@ -1,0 +1,38 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: 'Resume Grader Serverless Application'
+
+Parameters:
+  OpenAIApiKey:
+    Type: String
+    NoEcho: true
+    Description: OpenAI API Key for resume grading
+
+Resources:
+  ResumeGraderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: resume-grader-function
+      CodeUri: .
+      Handler: app.lambda_handler
+      Runtime: python3.11
+      MemorySize: 1024
+      Timeout: 300
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Ref OpenAIApiKey
+      Events:
+        HttpApiEvent:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ResumeGraderApiEndpoint:
+    Description: HTTP API endpoint URL
+    Value: !Sub 'https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+
+  ResumeGraderFunctionArn:
+    Description: Resume Grader Lambda Function ARN
+    Value: !GetAtt ResumeGraderFunction.Arn
