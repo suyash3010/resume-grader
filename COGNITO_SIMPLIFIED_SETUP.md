@@ -89,10 +89,10 @@
 
 ## Part 3: Add Google as Identity Provider (AFTER Pool Creation)
 
-### Step 3.1: Go to Identity Providers
+### Step 3.1: Go to Social Providers
 1. Click on your new user pool: `resume-grader-pool`
-2. Left sidebar → "Sign-in experience"
-3. Click "Identity providers"
+2. Left sidebar → "Authentication"
+3. Click "Social and external providers"
 4. You should see a "Google" button - click it
 
 ### Step 3.2: Configure Google Provider
@@ -109,8 +109,8 @@ A form will appear:
 ## Part 4: Create App Client
 
 ### Step 4.1: Create App Client
-1. Left sidebar → "App integration"
-2. Click "App clients and analytics"
+1. Left sidebar → "Applications"
+2. Click "App clients"
 3. Click "Create app client" (blue button)
 4. Settings:
    - App client name: `resume-grader-client`
@@ -121,19 +121,17 @@ A form will appear:
 - You'll see it in the app client details
 
 ### Step 4.2: Configure Redirect URIs
-1. Still in App integration, click "App client settings"
-2. Find "Allowed redirect URIs"
-3. Add both:
+1. Still in "Applications", click your app client: `resume-grader-client`
+2. Scroll down to "Allowed redirect URIs"
+3. Click "Add URI" and add:
    ```
    http://localhost:5000/callback
-   https://your-lambda-url/callback
    ```
-   (Lambda URL comes after deployment)
-4. Find "Allowed sign-out URLs"
-5. Add:
+   (Add Lambda URL after deployment)
+4. Scroll to "Allowed sign-out URLs"
+5. Click "Add URI" and add:
    ```
    http://localhost:5000/logout
-   https://your-lambda-url/logout
    ```
 6. Click "Save"
 
@@ -142,8 +140,8 @@ A form will appear:
 ## Part 5: Create Cognito Domain
 
 ### Step 5.1: Create Domain
-1. Left sidebar → "App integration"
-2. Click "Domain name"
+1. Left sidebar → "Branding"
+2. Click "Domain"
 3. Click "Create Cognito domain"
 4. Domain prefix: `resume-grader-<your-name>`
    - Must be unique globally
