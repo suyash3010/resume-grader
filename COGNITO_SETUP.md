@@ -60,7 +60,7 @@ This guide walks through setting up AWS Cognito with Google OAuth for the Resume
 
 ## Step 3: Configure Hosted UI
 
-1. Go to "App integration" → "App client settings"
+1. Go to "AImple" → "App client settings"
 2. Set Callback URL(s):
    ```
    https://your-lambda-url/

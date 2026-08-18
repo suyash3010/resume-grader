@@ -62,7 +62,7 @@ def get_login_url(redirect_uri):
     params = {
         'client_id': COGNITO_CLIENT_ID,
         'response_type': 'code',
-        'scope': 'email openid profile',
+        'scope': 'email openid',
         'redirect_uri': redirect_uri,
     }
     return f'{COGNITO_AUTH_URL}?{urlencode(params)}'
@@ -116,10 +116,12 @@ def get_user_info_from_token(id_token):
     """Extract user info from ID token"""
     payload = decode_token(id_token)
     if payload:
+        email = payload.get('email', '')
+        name = payload.get('name') or email or 'Logged In'
         return {
             'sub': payload.get('sub'),
-            'email': payload.get('email'),
-            'name': payload.get('name', payload.get('email', 'User')),
+            'email': email,
+            'name': name,
             'picture': payload.get('picture'),
         }
     return None
@@ -335,11 +337,9 @@ def callback():
 
 @app.route('/logout')
 def logout():
-    """Logout user"""
+    """Logout user and clear session"""
     session.clear()
-    # Optionally redirect to Cognito logout
-    cognito_logout_url = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/logout?client_id={COGNITO_CLIENT_ID}&logout_uri={url_for("index", _external=True)}'
-    return redirect(cognito_logout_url)
+    return redirect(url_for('index'))
 
 
 # ============================================================================
@@ -348,6 +348,120 @@ def logout():
 
 @app.route('/')
 def index():
+    user = session.get('user')
+
+    # If not logged in, show login page
+    if not user:
+        login_html = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Resume Grader - AI-Powered Resume Analysis</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                body {
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', sans-serif;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    min-height: 100vh;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    padding: 20px;
+                }
+                .login-container {
+                    text-align: center;
+                    animation: slideUp 0.6s ease-out;
+                }
+                @keyframes slideUp {
+                    from { opacity: 0; transform: translateY(30px); }
+                    to { opacity: 1; transform: translateY(0); }
+                }
+                .logo { font-size: 64px; margin-bottom: 20px; }
+                h1 {
+                    color: white;
+                    font-size: 42px;
+                    font-weight: 700;
+                    margin-bottom: 12px;
+                    letter-spacing: -0.5px;
+                }
+                .subtitle {
+                    color: rgba(255, 255, 255, 0.9);
+                    font-size: 18px;
+                    margin-bottom: 48px;
+                    max-width: 500px;
+                    margin-left: auto;
+                    margin-right: auto;
+                    line-height: 1.6;
+                }
+                .login-btn {
+                    background: white;
+                    color: #667eea;
+                    padding: 16px 40px;
+                    border: none;
+                    border-radius: 12px;
+                    font-size: 16px;
+                    font-weight: 700;
+                    cursor: pointer;
+                    display: inline-flex;
+                    align-items: center;
+                    gap: 12px;
+                    transition: all 0.3s ease;
+                    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+                    text-decoration: none;
+                }
+                .login-btn:hover {
+                    transform: translateY(-3px);
+                    box-shadow: 0 15px 40px rgba(0, 0, 0, 0.3);
+                }
+                .login-btn:active {
+                    transform: translateY(-1px);
+                }
+                .google-icon {
+                    width: 20px;
+                    height: 20px;
+                }
+                .features {
+                    margin-top: 80px;
+                    color: rgba(255, 255, 255, 0.8);
+                    font-size: 14px;
+                    display: flex;
+                    justify-content: center;
+                    gap: 40px;
+                    flex-wrap: wrap;
+                }
+                .feature { display: flex; align-items: center; gap: 8px; }
+                .feature-icon { font-size: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="login-container">
+                <div class="logo">🎯</div>
+                <h1>Resume Grader</h1>
+                <p class="subtitle">AI-powered resume analysis. Get instant feedback on how your resume matches job requirements.</p>
+
+                <a href="/login" class="login-btn">
+                    <svg class="google-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                    </svg>
+                    Continue with Google
+                </a>
+
+                <div class="features">
+                    <div class="feature"><span class="feature-icon">⚡</span> <span>Instant Analysis</span></div>
+                    <div class="feature"><span class="feature-icon">🎯</span> <span>Job Matching</span></div>
+                    <div class="feature"><span class="feature-icon">🔒</span> <span>Secure & Private</span></div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """
+        return render_template_string(login_html)
+
+    # If logged in, show main app
     html = """
     <!DOCTYPE html>
     <html>
@@ -392,12 +506,8 @@ def index():
             .user-info { display: flex; align-items: center; gap: 12px; }
             .profile-pic { width: 32px; height: 32px; border-radius: 50%; }
             .user-name { color: #2d3748; font-size: 14px; font-weight: 500; }
-            .login-btn, .logout-btn { background: #667eea; color: white; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 600; display: inline-block; transition: all 0.2s; }
-            .login-btn:hover, .logout-btn:hover { background: #764ba2; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
-            .login-prompt { text-align: center; padding: 60px 20px; }
-            .login-btn-large { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 16px 32px; border-radius: 8px; font-size: 16px; font-weight: 600; display: inline-flex; align-items: center; gap: 12px; transition: all 0.3s; }
-            .login-btn-large:hover { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(102, 126, 234, 0.4); }
-            .google-icon { font-size: 20px; }
+            .logout-btn { background: #667eea; color: white; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 600; display: inline-block; transition: all 0.2s; }
+            .logout-btn:hover { background: #764ba2; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
         </style>
     </head>
     <body>
@@ -405,22 +515,17 @@ def index():
             <div class="header">
                 <h1>🎯 Resume Grader</h1>
                 <div class="auth-buttons">
-                    {% if user %}
-                        <div class="user-info">
-                            {% if user.picture %}
-                                <img src="{{ user.picture }}" alt="Profile" class="profile-pic">
-                            {% endif %}
-                            <span class="user-name">{{ user.name }}</span>
-                            <a href="/logout" class="logout-btn">Logout</a>
-                        </div>
-                    {% else %}
-                        <a href="/login" class="login-btn">Login with Google</a>
-                    {% endif %}
+                    <div class="user-info">
+                        {% if user.picture %}
+                            <img src="{{ user.picture }}" alt="Profile" class="profile-pic">
+                        {% endif %}
+                        <span class="user-name">{{ user.name }}</span>
+                        <a href="/logout" class="logout-btn">Logout</a>
+                    </div>
                 </div>
             </div>
 
-            {% if user %}
-                <p class="subtitle">Upload resumes and get them scored against the job description</p>
+            <p class="subtitle">Upload resumes and get them scored against the job description</p>
 
             <button class="settings-toggle" id="settingsToggle">⚙️ Configure JD & Rubric</button>
 
@@ -449,15 +554,6 @@ def index():
             <a id="downloadBtn" class="download-btn" href="" download="shortlist.xlsx" style="display: none; text-decoration: none;">Download Results</a>
 
             <div class="status" id="status"></div>
-            {% else %}
-                <div class="login-prompt">
-                    <p class="subtitle">Sign in to grade resumes</p>
-                    <a href="/login" class="login-btn-large">
-                        <span class="google-icon">🔐</span>
-                        Continue with Google
-                    </a>
-                </div>
-            {% endif %}
         </div>
 
         <script>
