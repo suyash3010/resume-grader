@@ -32,7 +32,8 @@ jobs:
             CognitoClientId=${{ secrets.COGNITO_CLIENT_ID }} \
             CognitoClientSecret=${{ secrets.COGNITO_CLIENT_SECRET }} \
             CognitoDomain=${{ secrets.COGNITO_DOMAIN }} \
-            CognitoRegion=${{ secrets.COGNITO_REGION }}
+            CognitoRegion=${{ secrets.COGNITO_REGION }} \
+            AdminEmails=${{ secrets.ADMIN_EMAILS }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
