@@ -52,11 +52,15 @@ ACTIVITY_TABLE_NAME = os.environ.get('ACTIVITY_TABLE_NAME', 'resume-grader-user-
 dynamodb = boto3.resource('dynamodb')
 activity_table = dynamodb.Table(ACTIVITY_TABLE_NAME)
 
+# In-memory activity store for local development (when DynamoDB is not available)
+_LOCAL_ACTIVITIES = {}
+
 # Admin Configuration
 ADMIN_EMAILS = set(
     email.strip() for email in os.environ.get('ADMIN_EMAILS', '').split(',')
     if email.strip()
 )
+print(f'Admin emails loaded: {ADMIN_EMAILS}', flush=True)
 
 _last_results = None
 
@@ -67,21 +71,25 @@ MODEL = "gpt-4o"
 # ============================================================================
 
 def log_activity(email, action, details=None):
-    """Log user activity to DynamoDB"""
+    """Log user activity to DynamoDB (or local store if unavailable)"""
+    activity_item = {
+        'email': email,
+        'timestamp': int(time.time() * 1000),
+        'action': action,
+        'details': details or {},
+        'ip_address': request.remote_addr,
+        'user_agent': request.headers.get('User-Agent', 'Unknown')
+    }
+
     try:
-        activity_table.put_item(
-            Item={
-                'email': email,
-                'timestamp': int(time.time() * 1000),
-                'action': action,
-                'details': details or {},
-                'ip_address': request.remote_addr,
-                'user_agent': request.headers.get('User-Agent', 'Unknown')
-            }
-        )
-        print(f'Activity logged - Email: {email}, Action: {action}', flush=True)
+        activity_table.put_item(Item=activity_item)
+        print(f'Activity logged to DynamoDB - Email: {email}, Action: {action}', flush=True)
     except Exception as e:
-        print(f'Failed to log activity: {e}', flush=True)
+        # Fallback to local storage for development
+        print(f'DynamoDB unavailable, using local storage: {e}', flush=True)
+        if email not in _LOCAL_ACTIVITIES:
+            _LOCAL_ACTIVITIES[email] = []
+        _LOCAL_ACTIVITIES[email].append(activity_item)
 
 # ============================================================================
 # COGNITO AUTHENTICATION HELPERS
@@ -104,8 +112,11 @@ def admin_required(f):
         if 'user' not in session:
             return redirect(url_for('login'))
         user_email = session.get('user', {}).get('email')
+        print(f'Admin check - User email: {user_email}, Admin emails: {ADMIN_EMAILS}, Is admin: {user_email in ADMIN_EMAILS}', flush=True)
         if user_email not in ADMIN_EMAILS:
+            print(f'Access denied for {user_email}', flush=True)
             return jsonify({'error': 'Admin access required'}), 403
+        print(f'Access granted for {user_email}', flush=True)
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1599,8 +1610,10 @@ def health():
 def view_activity():
     """View user activity log (admin only)"""
     user_email = session.get('user', {}).get('email', 'unknown')
+    print(f'Fetching activity for admin: {user_email}', flush=True)
 
     try:
+        print(f'Querying DynamoDB table: {ACTIVITY_TABLE_NAME}', flush=True)
         # Query activities for this user
         response = activity_table.query(
             KeyConditionExpression='email = :email',
@@ -1610,20 +1623,27 @@ def view_activity():
         )
 
         activities = response.get('Items', [])
+        print(f'Found {len(activities)} activities in DynamoDB', flush=True)
 
-        # Convert timestamps to readable format
-        for activity in activities:
-            timestamp = activity.get('timestamp', 0)
-            activity['readable_time'] = datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
-
-        return jsonify({
-            'email': user_email,
-            'activities': activities,
-            'total_count': len(activities)
-        }), 200
     except Exception as e:
-        print(f'Failed to fetch activity: {e}', flush=True)
-        return jsonify({'error': str(e)}), 500
+        # Fallback to local storage for development
+        print(f'DynamoDB unavailable ({type(e).__name__}), using local storage', flush=True)
+        activities = _LOCAL_ACTIVITIES.get(user_email, [])
+        # Sort by timestamp descending
+        activities = sorted(activities, key=lambda x: x.get('timestamp', 0), reverse=True)
+        print(f'Found {len(activities)} activities in local storage', flush=True)
+
+    # Convert timestamps to readable format
+    for activity in activities:
+        timestamp = activity.get('timestamp', 0)
+        activity['readable_time'] = datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
+
+    return jsonify({
+        'email': user_email,
+        'activities': activities,
+        'total_count': len(activities),
+        'source': 'dynamodb' if activities else 'local'
+    }), 200
 
 
 def lambda_handler(event, context):
