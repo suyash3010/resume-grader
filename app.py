@@ -1863,6 +1863,8 @@ def view_activity():
     # Convert timestamps to readable format
     for activity in all_activities:
         timestamp = activity.get('timestamp', 0)
+        # Convert Decimal to int (from DynamoDB)
+        timestamp = int(timestamp) if timestamp else 0
         activity['readable_time'] = datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
 
     activity_html = render_template_string(ACTIVITY_DASHBOARD_HTML,
