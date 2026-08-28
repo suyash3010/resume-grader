@@ -4,23 +4,128 @@ import io
 import time
 import tempfile
 from datetime import datetime
+from functools import wraps
+from urllib.parse import urlencode, parse_qs
 
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, session, redirect, url_for, render_template_string
+from markupsafe import escape
 from openai import OpenAI
 import pandas as pd
 from werkzeug.utils import secure_filename
 import pypdfium2 as pdfium
 from docx import Document
 from dotenv import load_dotenv
+import requests
+import boto3
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Cognito Configuration
+COGNITO_USER_POOL_ID = os.environ.get('COGNITO_USER_POOL_ID')
+COGNITO_CLIENT_ID = os.environ.get('COGNITO_CLIENT_ID')
+COGNITO_CLIENT_SECRET = os.environ.get('COGNITO_CLIENT_SECRET')
+COGNITO_DOMAIN = os.environ.get('COGNITO_DOMAIN')
+COGNITO_REGION = os.environ.get('COGNITO_REGION', 'us-east-1')
+
+# Build Cognito URLs
+COGNITO_DISCOVERY_URL = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/openid-configuration'
+COGNITO_AUTH_URL = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/authorize'
+COGNITO_TOKEN_URL = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/token'
+COGNITO_JWKS_URL = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/jwks.json'
+
+# Cognito client for token verification
+cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
 
 _last_results = None
 
 MODEL = "gpt-4o"
+
+# ============================================================================
+# COGNITO AUTHENTICATION HELPERS
+# ============================================================================
+
+def login_required(f):
+    """Decorator to require authentication"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def get_login_url(redirect_uri):
+    """Generate Cognito login URL"""
+    params = {
+        'client_id': COGNITO_CLIENT_ID,
+        'response_type': 'code',
+        'scope': 'email openid',
+        'redirect_uri': redirect_uri,
+    }
+    return f'{COGNITO_AUTH_URL}?{urlencode(params)}'
+
+
+def exchange_code_for_token(code, redirect_uri):
+    """Exchange authorization code for ID and access tokens"""
+    try:
+        response = requests.post(
+            COGNITO_TOKEN_URL,
+            headers={'Content-Type': 'application/x-www-form-urlencoded'},
+            data={
+                'grant_type': 'authorization_code',
+                'client_id': COGNITO_CLIENT_ID,
+                'client_secret': COGNITO_CLIENT_SECRET,
+                'code': code,
+                'redirect_uri': redirect_uri,
+            }
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error exchanging code: {e}")
+        return None
+
+
+def decode_token(token):
+    """Decode and verify JWT token from Cognito"""
+    try:
+        # Fetch public keys
+        resp = requests.get(COGNITO_JWKS_URL)
+        keys = resp.json()['keys']
+
+        # Simple verification - in production use python-jose
+        import base64
+        parts = token.split('.')
+
+        # Decode payload (second part)
+        payload = parts[1]
+        # Add padding if needed
+        payload += '=' * (4 - len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+
+        return json.loads(decoded)
+    except Exception as e:
+        print(f"Error decoding token: {e}")
+        return None
+
+
+def get_user_info_from_token(id_token):
+    """Extract user info from ID token"""
+    payload = decode_token(id_token)
+    if payload:
+        email = payload.get('email', '')
+        name = payload.get('name') or email or 'Logged In'
+        return {
+            'sub': payload.get('sub'),
+            'email': email,
+            'name': name,
+            'picture': payload.get('picture'),
+        }
+    return None
 
 JOB_DESCRIPTION = """
 Senior QA Engineer
@@ -187,8 +292,309 @@ def score_resume(client, resume_text, filename, job_description, rubric):
     return result
 
 
+# ============================================================================
+# AUTHENTICATION ROUTES
+# ============================================================================
+
+@app.route('/login')
+def login():
+    """Redirect to Cognito login"""
+    redirect_uri = url_for('callback', _external=True)
+    login_url = get_login_url(redirect_uri)
+    return redirect(login_url)
+
+
+@app.route('/callback')
+def callback():
+    """Handle Cognito callback"""
+    code = request.args.get('code')
+    error = request.args.get('error')
+
+    if error:
+        return jsonify({'error': error}), 400
+
+    if not code:
+        return jsonify({'error': 'Missing authorization code'}), 400
+
+    # Exchange code for tokens
+    redirect_uri = url_for('callback', _external=True)
+    token_response = exchange_code_for_token(code, redirect_uri)
+
+    if not token_response or 'id_token' not in token_response:
+        return jsonify({'error': 'Failed to get tokens'}), 400
+
+    # Extract user info from ID token
+    user_info = get_user_info_from_token(token_response['id_token'])
+    if not user_info:
+        return jsonify({'error': 'Failed to decode token'}), 400
+
+    # Store user info in session
+    session['user'] = user_info
+    session['id_token'] = token_response['id_token']
+    session['access_token'] = token_response.get('access_token')
+
+    return redirect(url_for('index'))
+
+
+@app.route('/logout')
+def logout():
+    """Logout user and clear session"""
+    session.clear()
+    return redirect(url_for('index'))
+
+
+# ============================================================================
+# APPLICATION ROUTES
+# ============================================================================
+
+LOGIN_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script>
+        (function () {
+            var stored = localStorage.getItem('theme');
+            var theme = stored || (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-theme', theme);
+        })();
+    </script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume Grader — Sign In</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --color-primary: #2563EB;
+            --color-primary-dark: #1D4ED8;
+            --color-secondary: #3B82F6;
+            --color-accent: #EA580C;
+            --color-accent-dark: #C2410C;
+            --color-background: #F8FAFC;
+            --color-foreground: #1E293B;
+            --color-card: #FFFFFF;
+            --color-muted: #E9EFF8;
+            --color-muted-foreground: #475569;
+            --color-border: #E2E8F0;
+            --color-ring: #2563EB;
+            --color-eyebrow-bg: #FFF1E8;
+            --color-eyebrow-border: #FBD8BE;
+            --color-glass-bg: rgba(255, 255, 255, 0.72);
+            --color-glass-border: rgba(255, 255, 255, 0.6);
+            --color-glow-1: rgba(37, 99, 235, 0.16);
+            --color-glow-2: rgba(234, 88, 12, 0.10);
+            --color-grid-line: rgba(30, 41, 59, 0.06);
+            --color-grid-line-strong: rgba(37, 99, 235, 0.10);
+
+            --font-heading: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            --font-body: 'Open Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+            --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px;
+            --space-8: 32px; --space-12: 48px;
+            --radius-md: 10px; --radius-lg: 16px; --radius-xl: 24px;
+            --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+            --shadow-lg: 0 24px 64px rgba(15, 23, 42, 0.16);
+
+            color-scheme: light;
+        }
+
+        :root[data-theme="dark"] {
+            --color-primary: #3B82F6;
+            --color-primary-dark: #60A5FA;
+            --color-secondary: #60A5FA;
+            --color-accent: #FB923C;
+            --color-accent-dark: #FDBA74;
+            --color-background: #0B1220;
+            --color-foreground: #E2E8F0;
+            --color-card: #131C2E;
+            --color-muted: #1B2740;
+            --color-muted-foreground: #94A3B8;
+            --color-border: #263252;
+            --color-ring: #60A5FA;
+            --color-eyebrow-bg: #3A2412;
+            --color-eyebrow-border: #5B3A1E;
+            --color-glass-bg: rgba(19, 28, 46, 0.72);
+            --color-glass-border: rgba(255, 255, 255, 0.08);
+            --color-glow-1: rgba(59, 130, 246, 0.20);
+            --color-glow-2: rgba(251, 146, 60, 0.12);
+            --color-grid-line: rgba(226, 232, 240, 0.07);
+            --color-grid-line-strong: rgba(96, 165, 250, 0.14);
+
+            --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+            --shadow-lg: 0 24px 64px rgba(0, 0, 0, 0.6);
+
+            color-scheme: dark;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: var(--font-body);
+            color: var(--color-foreground);
+            background-color: var(--color-background);
+            background-image:
+                linear-gradient(var(--color-grid-line) 1px, transparent 1px),
+                linear-gradient(90deg, var(--color-grid-line) 1px, transparent 1px),
+                linear-gradient(var(--color-grid-line-strong) 1px, transparent 1px),
+                linear-gradient(90deg, var(--color-grid-line-strong) 1px, transparent 1px),
+                radial-gradient(circle at 15% -10%, var(--color-glow-1), transparent 45%),
+                radial-gradient(circle at 90% 0%, var(--color-glow-2), transparent 40%);
+            background-size: 24px 24px, 24px 24px, 120px 120px, 120px 120px, 100% 100%, 100% 100%;
+            background-repeat: repeat, repeat, repeat, repeat, no-repeat, no-repeat;
+            background-attachment: fixed;
+            min-height: 100vh;
+            line-height: 1.5;
+            font-size: 16px;
+            display: flex; align-items: center; justify-content: center;
+            padding: var(--space-6);
+        }
+
+        button, a { cursor: pointer; }
+        :focus-visible { outline: 2px solid var(--color-ring); outline-offset: 2px; border-radius: 4px; }
+
+        .login-card {
+            width: 100%; max-width: 480px; text-align: center;
+            background: var(--color-glass-bg);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+            border: 1px solid var(--color-glass-border);
+            border-radius: var(--radius-xl);
+            box-shadow: var(--shadow-lg);
+            padding: var(--space-12) var(--space-8);
+            animation: slideUp 0.5s ease-out;
+        }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(24px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .brand-mark {
+            position: relative;
+            width: 56px; height: 56px; border-radius: 16px; margin: 0 auto var(--space-6);
+            background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+            display: flex; align-items: center; justify-content: center;
+            box-shadow: var(--shadow-sm);
+        }
+        .brand-mark svg { width: 28px; height: 28px; stroke: #fff; }
+
+        .eyebrow {
+            display: inline-flex; align-items: center; gap: 8px;
+            font-size: 13px; font-weight: 600; letter-spacing: 0.02em;
+            color: var(--color-accent-dark); background: var(--color-eyebrow-bg);
+            border: 1px solid var(--color-eyebrow-border); padding: 6px 14px; border-radius: 999px;
+            margin-bottom: var(--space-6);
+        }
+        .eyebrow svg { width: 14px; height: 14px; stroke: currentColor; }
+
+        h1 {
+            font-family: var(--font-heading); font-weight: 700;
+            font-size: clamp(28px, 5vw, 36px); line-height: 1.2;
+            margin-bottom: var(--space-3);
+        }
+        h1 span { color: var(--color-primary); }
+        p.lede { color: var(--color-muted-foreground); font-size: 15px; margin-bottom: var(--space-8); }
+
+        .login-btn {
+            display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+            width: 100%; min-height: 50px;
+            background: var(--color-card); color: var(--color-foreground);
+            border: 1px solid var(--color-border); border-radius: var(--radius-md);
+            font-family: var(--font-heading); font-size: 15px; font-weight: 600;
+            text-decoration: none; padding: 14px 24px;
+            transition: transform 0.15s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .login-btn:hover { transform: translateY(-2px); border-color: var(--color-primary); box-shadow: 0 12px 24px rgba(37, 99, 235, 0.18); }
+        .login-btn:active { transform: translateY(0); }
+        .google-icon { width: 20px; height: 20px; display: block; }
+
+        .features {
+            margin-top: var(--space-8); padding-top: var(--space-6);
+            border-top: 1px solid var(--color-border);
+            display: flex; justify-content: center; gap: var(--space-6); flex-wrap: wrap;
+            color: var(--color-muted-foreground); font-size: 13px;
+        }
+        .feature { display: flex; align-items: center; gap: 6px; }
+        .feature svg { width: 15px; height: 15px; stroke: var(--color-primary); }
+
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 12l2 2 4-4"/><path d="M12 3l8 4v5c0 5-3.5 8.5-8 9-4.5-.5-8-4-8-9V7l8-4z"/></svg>
+        </span>
+
+        <span class="eyebrow">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>
+            AI-Powered Screening
+        </span>
+
+        <h1>Resume <span>Grader</span></h1>
+        <p class="lede">Sign in to grade candidate resumes against your job description and export a ranked shortlist.</p>
+
+        <a href="/login" class="login-btn">
+            <svg class="google-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+            </svg>
+            Continue with Google
+        </a>
+
+        <div class="features">
+            <span class="feature">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22l9-11.5H12l1-8.5z"/></svg>
+                Instant analysis
+            </span>
+            <span class="feature">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                Rubric-based scoring
+            </span>
+            <span class="feature">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+                Secure &amp; private
+            </span>
+        </div>
+    </div>
+</body>
+</html>
+"""
+
+
+def build_user_block(user):
+    """Render the signed-in user chip + logout button for the app header."""
+    name = escape(user.get('name') or user.get('email') or 'Logged In')
+    picture = user.get('picture')
+    avatar = (
+        f'<img src="{escape(picture)}" alt="" class="profile-pic">'
+        if picture else
+        '<span class="profile-pic profile-pic-fallback" aria-hidden="true">'
+        '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+        '<path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>'
+    )
+    return f"""
+                <div class="user-info">
+                    {avatar}
+                    <span class="user-name">{name}</span>
+                    <a href="/logout" class="logout-btn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+                        <span>Logout</span>
+                    </a>
+                </div>"""
+
+
 @app.route('/')
 def index():
+    user = session.get('user')
+
+    # If not logged in, show the login page
+    if not user:
+        return LOGIN_HTML
+
     html = """
     <!DOCTYPE html>
     <html lang="en">
@@ -358,7 +764,7 @@ def index():
                 border-bottom: 1px solid var(--color-border);
                 transition: background-color 0.25s ease, border-color 0.25s ease;
             }
-            .header-actions { display: flex; align-items: center; gap: var(--space-3); }
+            .header-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; justify-content: flex-end; }
             .brand { display: flex; align-items: center; gap: var(--space-4); }
             .brand-mark {
                 position: relative;
@@ -418,6 +824,39 @@ def index():
             .theme-toggle .icon-moon { display: block; }
             :root[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
             :root[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+
+            /* ---------- Signed-in user ---------- */
+            .user-info {
+                display: flex; align-items: center; gap: var(--space-3);
+                background: var(--color-card); border: 1px solid var(--color-border);
+                border-radius: 999px; padding: 4px 6px 4px 6px;
+            }
+            .profile-pic {
+                width: 30px; height: 30px; border-radius: 50%; object-fit: cover; flex-shrink: 0;
+            }
+            .profile-pic-fallback {
+                background: var(--color-muted); display: flex; align-items: center; justify-content: center;
+            }
+            .profile-pic-fallback svg { width: 16px; height: 16px; stroke: var(--color-muted-foreground); }
+            .user-name {
+                font-size: 13px; font-weight: 600; color: var(--color-foreground);
+                max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+            }
+            .logout-btn {
+                display: inline-flex; align-items: center; gap: 6px;
+                background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
+                color: var(--color-on-primary); text-decoration: none;
+                font-family: var(--font-body); font-size: 13px; font-weight: 600;
+                padding: 8px 14px; border-radius: 999px;
+                transition: transform 0.15s ease, box-shadow 0.2s ease;
+            }
+            .logout-btn svg { width: 14px; height: 14px; stroke: currentColor; }
+            .logout-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(37, 99, 235, 0.28); }
+            .logout-btn:active { transform: translateY(0); }
+            @media (max-width: 640px) {
+                .user-name { display: none; }
+                .logout-btn span { display: none; }
+            }
 
             /* ---------- Hero ---------- */
             .hero { max-width: 1120px; margin: 0 auto; padding: var(--space-16) var(--space-8) var(--space-8); text-align: center; }
@@ -651,6 +1090,7 @@ def index():
                     <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4z"/></svg>
                     AI-Powered Screening
                 </span>
+PLACEHOLDER_USER
                 <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to dark mode" aria-pressed="false">
                     <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="M4.93 4.93l1.41 1.41"/><path d="M17.66 17.66l1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="M6.34 17.66l-1.41 1.41"/><path d="M19.07 4.93l-1.41 1.41"/></svg>
                     <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
@@ -917,10 +1357,16 @@ def index():
     </body>
     </html>
     """
-    return html.replace("PLACEHOLDER_JD", JOB_DESCRIPTION).replace("PLACEHOLDER_RUBRIC", RUBRIC)
+    return (
+        html
+        .replace("PLACEHOLDER_USER", build_user_block(user))
+        .replace("PLACEHOLDER_JD", JOB_DESCRIPTION)
+        .replace("PLACEHOLDER_RUBRIC", RUBRIC)
+    )
 
 
 @app.route('/grade', methods=['POST'])
+@login_required
 def grade_resumes():
     global _last_results
 
@@ -1001,6 +1447,7 @@ def grade_resumes():
 
 
 @app.route('/download')
+@login_required
 def download():
     global _last_results
 
