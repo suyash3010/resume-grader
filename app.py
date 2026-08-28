@@ -134,6 +134,39 @@ def get_user_info_from_token(id_token):
         }
     return None
 
+
+def get_user_info_from_userinfo(access_token):
+    """Fetch user info from Cognito userinfo endpoint using access token"""
+    try:
+        userinfo_url = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/openid-configuration'
+        config_response = requests.get(userinfo_url)
+        config = config_response.json()
+        userinfo_endpoint = config.get('userinfo_endpoint')
+
+        if not userinfo_endpoint:
+            userinfo_endpoint = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/userinfo'
+
+        response = requests.get(
+            userinfo_endpoint,
+            headers={'Authorization': f'Bearer {access_token}'}
+        )
+        response.raise_for_status()
+        userinfo = response.json()
+
+        email = userinfo.get('email', '')
+        name = userinfo.get('name', userinfo.get('email', 'Logged In'))
+        picture = userinfo.get('picture', '')
+
+        return {
+            'sub': userinfo.get('sub'),
+            'email': email,
+            'name': name,
+            'picture': picture,
+        }
+    except Exception as e:
+        logger.warning(f"Failed to fetch userinfo: {e}")
+        return None
+
 JOB_DESCRIPTION = """
 Senior QA Engineer
 Location: Trivandrum
@@ -337,6 +370,13 @@ def callback():
     if not user_info:
         logger.error('Failed to decode token')
         return jsonify({'error': 'Failed to decode token'}), 400
+
+    # Try to fetch email from Cognito userinfo endpoint (needed for Google federation)
+    access_token = token_response.get('access_token')
+    if access_token:
+        userinfo = get_user_info_from_userinfo(access_token)
+        if userinfo:
+            user_info.update(userinfo)
 
     # Store user info in session
     session['user'] = user_info
