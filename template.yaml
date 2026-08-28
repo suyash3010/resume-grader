@@ -24,6 +24,10 @@ Parameters:
     Type: String
     Default: eu-west-1
     Description: AWS Region for Cognito
+  AdminEmails:
+    Type: String
+    Default: ''
+    Description: Comma-separated list of admin email addresses (e.g., admin@example.com,user@example.com)
 
 Resources:
   UserActivityTable:
@@ -60,6 +64,7 @@ Resources:
           COGNITO_DOMAIN: !Ref CognitoDomain
           COGNITO_REGION: !Ref CognitoRegion
           ACTIVITY_TABLE_NAME: !Ref UserActivityTable
+          ADMIN_EMAILS: !Ref AdminEmails
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref UserActivityTable

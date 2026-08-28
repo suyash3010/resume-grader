@@ -52,6 +52,12 @@ ACTIVITY_TABLE_NAME = os.environ.get('ACTIVITY_TABLE_NAME', 'resume-grader-user-
 dynamodb = boto3.resource('dynamodb')
 activity_table = dynamodb.Table(ACTIVITY_TABLE_NAME)
 
+# Admin Configuration
+ADMIN_EMAILS = set(
+    email.strip() for email in os.environ.get('ADMIN_EMAILS', '').split(',')
+    if email.strip()
+)
+
 _last_results = None
 
 MODEL = "gpt-4o"
@@ -87,6 +93,19 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         if 'user' not in session:
             return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def admin_required(f):
+    """Decorator to require admin access"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login'))
+        user_email = session.get('user', {}).get('email')
+        if user_email not in ADMIN_EMAILS:
+            return jsonify({'error': 'Admin access required'}), 403
         return f(*args, **kwargs)
     return decorated_function
 
@@ -1576,9 +1595,9 @@ def health():
 
 
 @app.route('/activity', methods=['GET'])
-@login_required
+@admin_required
 def view_activity():
-    """View user activity log"""
+    """View user activity log (admin only)"""
     user_email = session.get('user', {}).get('email', 'unknown')
 
     try:
