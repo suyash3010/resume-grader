@@ -396,7 +396,12 @@ def logout():
 
     # Redirect to Cognito logout endpoint to clear OAuth session
     logout_uri = url_for('index', _external=True)
-    cognito_logout_url = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/logout?client_id={COGNITO_CLIENT_ID}&logout_uri={logout_uri}'
+    logout_params = urlencode({
+        'client_id': COGNITO_CLIENT_ID,
+        'logout_uri': logout_uri
+    })
+    cognito_logout_url = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/logout?{logout_params}'
+    print(f'Redirecting to Cognito logout: {cognito_logout_url}', flush=True)
     return redirect(cognito_logout_url)
 
 
