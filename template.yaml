@@ -7,6 +7,23 @@ Parameters:
     Type: String
     NoEcho: true
     Description: OpenAI API Key for resume grading
+  CognitoUserPoolId:
+    Type: String
+    Description: AWS Cognito User Pool ID
+  CognitoClientId:
+    Type: String
+    Description: AWS Cognito Client ID
+  CognitoClientSecret:
+    Type: String
+    NoEcho: true
+    Description: AWS Cognito Client Secret
+  CognitoDomain:
+    Type: String
+    Description: AWS Cognito Domain name
+  CognitoRegion:
+    Type: String
+    Default: eu-west-1
+    Description: AWS Region for Cognito
 
 Resources:
   ResumeGraderFunction:
@@ -21,6 +38,11 @@ Resources:
       Environment:
         Variables:
           OPENAI_API_KEY: !Ref OpenAIApiKey
+          COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
+          COGNITO_CLIENT_ID: !Ref CognitoClientId
+          COGNITO_CLIENT_SECRET: !Ref CognitoClientSecret
+          COGNITO_DOMAIN: !Ref CognitoDomain
+          COGNITO_REGION: !Ref CognitoRegion
       Events:
         HttpApiEvent:
           Type: HttpApi
