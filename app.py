@@ -389,11 +389,15 @@ def callback():
 
 @app.route('/logout')
 def logout():
-    """Logout user and clear session"""
+    """Logout user and clear Cognito session"""
     user_email = session.get('user', {}).get('email', 'unknown')
     print(f'LOGOUT - Email: {user_email}', flush=True)
     session.clear()
-    return redirect(url_for('index'))
+
+    # Redirect to Cognito logout endpoint to clear OAuth session
+    logout_uri = url_for('index', _external=True)
+    cognito_logout_url = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/logout?client_id={COGNITO_CLIENT_ID}&logout_uri={logout_uri}'
+    return redirect(cognito_logout_url)
 
 
 # ============================================================================
