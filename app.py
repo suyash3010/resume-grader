@@ -3,6 +3,7 @@ import os
 import io
 import time
 import tempfile
+import logging
 from datetime import datetime
 from functools import wraps
 from urllib.parse import urlencode, parse_qs
@@ -19,6 +20,12 @@ import requests
 import boto3
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
@@ -311,9 +318,11 @@ def callback():
     error = request.args.get('error')
 
     if error:
+        logger.warning(f'LOGIN_FAILED - Error: {error}')
         return jsonify({'error': error}), 400
 
     if not code:
+        logger.warning('LOGIN_FAILED - Missing authorization code')
         return jsonify({'error': 'Missing authorization code'}), 400
 
     # Exchange code for tokens
@@ -326,6 +335,7 @@ def callback():
     # Extract user info from ID token
     user_info = get_user_info_from_token(token_response['id_token'])
     if not user_info:
+        logger.error('Failed to decode token')
         return jsonify({'error': 'Failed to decode token'}), 400
 
     # Store user info in session
@@ -333,12 +343,18 @@ def callback():
     session['id_token'] = token_response['id_token']
     session['access_token'] = token_response.get('access_token')
 
+    user_email = user_info.get('email', 'unknown')
+    user_name = user_info.get('name', 'unknown')
+    logger.info(f'LOGIN_SUCCESS - Email: {user_email}, Name: {user_name}, Sub: {user_info.get("sub")}')
+
     return redirect(url_for('index'))
 
 
 @app.route('/logout')
 def logout():
     """Logout user and clear session"""
+    user_email = session.get('user', {}).get('email', 'unknown')
+    logger.info(f'LOGOUT - Email: {user_email}')
     session.clear()
     return redirect(url_for('index'))
 
