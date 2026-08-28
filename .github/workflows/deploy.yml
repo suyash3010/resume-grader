@@ -25,7 +25,7 @@ jobs:
         run: sam build
 
       - name: Deploy to AWS
-        run: sam deploy --no-confirm-changeset --stack-name resume-grader-httpapi \
+        run: sam deploy --no-confirm-changeset --resolve-s3 --stack-name resume-grader-httpapi \
           --parameter-overrides \
             OpenAIApiKey=${{ secrets.OPENAI_API_KEY }} \
             CognitoUserPoolId=${{ secrets.COGNITO_USER_POOL_ID }} \
