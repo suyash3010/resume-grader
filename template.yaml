@@ -26,6 +26,22 @@ Parameters:
     Description: AWS Region for Cognito
 
 Resources:
+  UserActivityTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: resume-grader-user-activity
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: email
+          AttributeType: S
+        - AttributeName: timestamp
+          AttributeType: N
+      KeySchema:
+        - AttributeName: email
+          KeyType: HASH
+        - AttributeName: timestamp
+          KeyType: RANGE
+
   ResumeGraderFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -43,6 +59,10 @@ Resources:
           COGNITO_CLIENT_SECRET: !Ref CognitoClientSecret
           COGNITO_DOMAIN: !Ref CognitoDomain
           COGNITO_REGION: !Ref CognitoRegion
+          ACTIVITY_TABLE_NAME: !Ref UserActivityTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UserActivityTable
       Events:
         HttpApiEvent:
           Type: HttpApi

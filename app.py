@@ -47,9 +47,35 @@ COGNITO_JWKS_URL = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO
 # Cognito client for token verification
 cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
 
+# DynamoDB Configuration
+ACTIVITY_TABLE_NAME = os.environ.get('ACTIVITY_TABLE_NAME', 'resume-grader-user-activity')
+dynamodb = boto3.resource('dynamodb')
+activity_table = dynamodb.Table(ACTIVITY_TABLE_NAME)
+
 _last_results = None
 
 MODEL = "gpt-4o"
+
+# ============================================================================
+# USER ACTIVITY TRACKING
+# ============================================================================
+
+def log_activity(email, action, details=None):
+    """Log user activity to DynamoDB"""
+    try:
+        activity_table.put_item(
+            Item={
+                'email': email,
+                'timestamp': int(time.time() * 1000),
+                'action': action,
+                'details': details or {},
+                'ip_address': request.remote_addr,
+                'user_agent': request.headers.get('User-Agent', 'Unknown')
+            }
+        )
+        print(f'Activity logged - Email: {email}, Action: {action}', flush=True)
+    except Exception as e:
+        print(f'Failed to log activity: {e}', flush=True)
 
 # ============================================================================
 # COGNITO AUTHENTICATION HELPERS
@@ -385,6 +411,9 @@ def callback():
     user_name = user_info.get('name', 'unknown')
     print(f'LOGIN_SUCCESS - Email: {user_email}, Name: {user_name}, Sub: {user_info.get("sub")}', flush=True)
 
+    # Log login activity
+    log_activity(user_email, 'LOGIN', {'name': user_name})
+
     return redirect(url_for('index'))
 
 
@@ -393,6 +422,11 @@ def logout():
     """Logout user and clear Cognito session"""
     user_email = session.get('user', {}).get('email', 'unknown')
     print(f'LOGOUT - Email: {user_email}', flush=True)
+
+    # Log logout activity
+    if user_email != 'unknown':
+        log_activity(user_email, 'LOGOUT')
+
     session.clear()
 
     # Redirect to Cognito logout endpoint to clear OAuth session
@@ -1434,6 +1468,9 @@ PLACEHOLDER_USER
 def grade_resumes():
     global _last_results
 
+    # Get user email from session
+    user_email = session.get('user', {}).get('email', 'unknown')
+
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return jsonify({"error": "OPENAI_API_KEY not configured"}), 500
@@ -1445,6 +1482,13 @@ def grade_resumes():
     rubric = request.form.get('rubric', RUBRIC)
 
     uploaded_files = request.files.getlist('files')
+
+    # Log activity: file upload
+    log_activity(user_email, 'UPLOAD_RESUMES', {
+        'file_count': len(uploaded_files),
+        'custom_jd': job_description != JOB_DESCRIPTION,
+        'custom_rubric': rubric != RUBRIC
+    })
     client = OpenAI(api_key=api_key)
     results = []
 
@@ -1529,6 +1573,38 @@ def download():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "healthy"}), 200
+
+
+@app.route('/activity', methods=['GET'])
+@login_required
+def view_activity():
+    """View user activity log"""
+    user_email = session.get('user', {}).get('email', 'unknown')
+
+    try:
+        # Query activities for this user
+        response = activity_table.query(
+            KeyConditionExpression='email = :email',
+            ExpressionAttributeValues={':email': user_email},
+            ScanIndexForward=False,  # Most recent first
+            Limit=100
+        )
+
+        activities = response.get('Items', [])
+
+        # Convert timestamps to readable format
+        for activity in activities:
+            timestamp = activity.get('timestamp', 0)
+            activity['readable_time'] = datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
+
+        return jsonify({
+            'email': user_email,
+            'activities': activities,
+            'total_count': len(activities)
+        }), 200
+    except Exception as e:
+        print(f'Failed to fetch activity: {e}', flush=True)
+        return jsonify({'error': str(e)}), 500
 
 
 def lambda_handler(event, context):
