@@ -138,20 +138,17 @@ def get_user_info_from_token(id_token):
 def get_user_info_from_userinfo(access_token):
     """Fetch user info from Cognito userinfo endpoint using access token"""
     try:
-        userinfo_url = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}/.well-known/openid-configuration'
-        config_response = requests.get(userinfo_url)
-        config = config_response.json()
-        userinfo_endpoint = config.get('userinfo_endpoint')
-
-        if not userinfo_endpoint:
-            userinfo_endpoint = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/userinfo'
+        userinfo_endpoint = f'https://{COGNITO_DOMAIN}.auth.{COGNITO_REGION}.amazoncognito.com/oauth2/userinfo'
+        print(f"Fetching userinfo from: {userinfo_endpoint}", flush=True)
 
         response = requests.get(
             userinfo_endpoint,
             headers={'Authorization': f'Bearer {access_token}'}
         )
+        print(f"Userinfo response status: {response.status_code}", flush=True)
         response.raise_for_status()
         userinfo = response.json()
+        print(f"Userinfo: {userinfo}", flush=True)
 
         email = userinfo.get('email', '')
         name = userinfo.get('name', userinfo.get('email', 'Logged In'))
