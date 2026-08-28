@@ -397,6 +397,7 @@ def logout():
 
     # Redirect to Cognito logout endpoint to clear OAuth session
     logout_uri = url_for('index', _external=True)
+    print(f'Logout URI: {logout_uri}', flush=True)
     logout_params = urlencode({
         'client_id': COGNITO_CLIENT_ID,
         'logout_uri': logout_uri
