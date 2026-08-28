@@ -164,7 +164,7 @@ def get_user_info_from_userinfo(access_token):
             'picture': picture,
         }
     except Exception as e:
-        logger.warning(f"Failed to fetch userinfo: {e}")
+        print(f"Failed to fetch userinfo: {e}", flush=True)
         return None
 
 JOB_DESCRIPTION = """
@@ -351,11 +351,11 @@ def callback():
     error = request.args.get('error')
 
     if error:
-        logger.warning(f'LOGIN_FAILED - Error: {error}')
+        print(f'LOGIN_FAILED - Error: {error}', flush=True)
         return jsonify({'error': error}), 400
 
     if not code:
-        logger.warning('LOGIN_FAILED - Missing authorization code')
+        print('LOGIN_FAILED - Missing authorization code', flush=True)
         return jsonify({'error': 'Missing authorization code'}), 400
 
     # Exchange code for tokens
@@ -368,7 +368,7 @@ def callback():
     # Extract user info from ID token
     user_info = get_user_info_from_token(token_response['id_token'])
     if not user_info:
-        logger.error('Failed to decode token')
+        print('Failed to decode token', flush=True)
         return jsonify({'error': 'Failed to decode token'}), 400
 
     # Try to fetch email from Cognito userinfo endpoint (needed for Google federation)
@@ -385,7 +385,7 @@ def callback():
 
     user_email = user_info.get('email', 'unknown')
     user_name = user_info.get('name', 'unknown')
-    logger.info(f'LOGIN_SUCCESS - Email: {user_email}, Name: {user_name}, Sub: {user_info.get("sub")}')
+    print(f'LOGIN_SUCCESS - Email: {user_email}, Name: {user_name}, Sub: {user_info.get("sub")}', flush=True)
 
     return redirect(url_for('index'))
 
@@ -394,7 +394,7 @@ def callback():
 def logout():
     """Logout user and clear session"""
     user_email = session.get('user', {}).get('email', 'unknown')
-    logger.info(f'LOGOUT - Email: {user_email}')
+    print(f'LOGOUT - Email: {user_email}', flush=True)
     session.clear()
     return redirect(url_for('index'))
 
