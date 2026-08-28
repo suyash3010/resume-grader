@@ -1,0 +1,39 @@
+name: Deploy to AWS Lambda
+
+on:
+  push:
+    branches: [master, main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install aws-sam-cli aws-cli
+
+      - name: Build SAM
+        run: sam build
+
+      - name: Deploy to AWS
+        run: sam deploy --no-confirm-changeset --stack-name resume-grader-httpapi \
+          --parameter-overrides \
+            OpenAIApiKey=${{ secrets.OPENAI_API_KEY }} \
+            CognitoUserPoolId=${{ secrets.COGNITO_USER_POOL_ID }} \
+            CognitoClientId=${{ secrets.COGNITO_CLIENT_ID }} \
+            CognitoClientSecret=${{ secrets.COGNITO_CLIENT_SECRET }} \
+            CognitoDomain=${{ secrets.COGNITO_DOMAIN }} \
+            CognitoRegion=${{ secrets.COGNITO_REGION }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: eu-west-1
