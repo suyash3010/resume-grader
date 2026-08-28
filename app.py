@@ -47,9 +47,49 @@ COGNITO_JWKS_URL = f'https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO
 # Cognito client for token verification
 cognito_client = boto3.client('cognito-idp', region_name=COGNITO_REGION)
 
+# DynamoDB Configuration
+ACTIVITY_TABLE_NAME = os.environ.get('ACTIVITY_TABLE_NAME', 'resume-grader-user-activity')
+dynamodb = boto3.resource('dynamodb')
+activity_table = dynamodb.Table(ACTIVITY_TABLE_NAME)
+
+# In-memory activity store for local development (when DynamoDB is not available)
+_LOCAL_ACTIVITIES = {}
+
+# Admin Configuration
+ADMIN_EMAILS = set(
+    email.strip() for email in os.environ.get('ADMIN_EMAILS', '').split(',')
+    if email.strip()
+)
+print(f'Admin emails loaded: {ADMIN_EMAILS}', flush=True)
+
 _last_results = None
 
 MODEL = "gpt-4o"
+
+# ============================================================================
+# USER ACTIVITY TRACKING
+# ============================================================================
+
+def log_activity(email, action, details=None):
+    """Log user activity to DynamoDB (or local store if unavailable)"""
+    activity_item = {
+        'email': email,
+        'timestamp': int(time.time() * 1000),
+        'action': action,
+        'details': details or {},
+        'ip_address': request.remote_addr,
+        'user_agent': request.headers.get('User-Agent', 'Unknown')
+    }
+
+    try:
+        activity_table.put_item(Item=activity_item)
+        print(f'Activity logged to DynamoDB - Email: {email}, Action: {action}', flush=True)
+    except Exception as e:
+        # Fallback to local storage for development
+        print(f'DynamoDB unavailable, using local storage: {e}', flush=True)
+        if email not in _LOCAL_ACTIVITIES:
+            _LOCAL_ACTIVITIES[email] = []
+        _LOCAL_ACTIVITIES[email].append(activity_item)
 
 # ============================================================================
 # COGNITO AUTHENTICATION HELPERS
@@ -61,6 +101,22 @@ def login_required(f):
     def decorated_function(*args, **kwargs):
         if 'user' not in session:
             return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def admin_required(f):
+    """Decorator to require admin access"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user' not in session:
+            return redirect(url_for('login'))
+        user_email = session.get('user', {}).get('email')
+        print(f'Admin check - User email: {user_email}, Admin emails: {ADMIN_EMAILS}, Is admin: {user_email in ADMIN_EMAILS}', flush=True)
+        if user_email not in ADMIN_EMAILS:
+            print(f'Access denied for {user_email}', flush=True)
+            return jsonify({'error': 'Admin access required'}), 403
+        print(f'Access granted for {user_email}', flush=True)
         return f(*args, **kwargs)
     return decorated_function
 
@@ -385,6 +441,9 @@ def callback():
     user_name = user_info.get('name', 'unknown')
     print(f'LOGIN_SUCCESS - Email: {user_email}, Name: {user_name}, Sub: {user_info.get("sub")}', flush=True)
 
+    # Log login activity
+    log_activity(user_email, 'LOGIN', {'name': user_name})
+
     return redirect(url_for('index'))
 
 
@@ -393,6 +452,11 @@ def logout():
     """Logout user and clear Cognito session"""
     user_email = session.get('user', {}).get('email', 'unknown')
     print(f'LOGOUT - Email: {user_email}', flush=True)
+
+    # Log logout activity
+    if user_email != 'unknown':
+        log_activity(user_email, 'LOGOUT')
+
     session.clear()
 
     # Redirect to Cognito logout endpoint to clear OAuth session
@@ -410,6 +474,211 @@ def logout():
 # ============================================================================
 # APPLICATION ROUTES
 # ============================================================================
+
+ACTIVITY_DASHBOARD_HTML = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Activity Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Open Sans', sans-serif;
+            background: linear-gradient(135deg, #0B1220 0%, #1a2847 100%);
+            color: #E2E8F0;
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 40px;
+        }
+        h1 {
+            font-family: 'Poppins', sans-serif;
+            font-size: 32px;
+            color: #3B82F6;
+        }
+        .header-actions {
+            display: flex;
+            gap: 20px;
+        }
+        .btn {
+            padding: 12px 24px;
+            border-radius: 10px;
+            border: none;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.3s;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-secondary {
+            background: #263252;
+            color: #E2E8F0;
+            border: 1px solid #3B82F6;
+        }
+        .btn-secondary:hover {
+            background: #3B82F6;
+            color: #fff;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 40px;
+        }
+        .stat-card {
+            background: rgba(59, 130, 246, 0.1);
+            border: 1px solid #3B82F6;
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            color: #3B82F6;
+            margin-bottom: 8px;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #94A3B8;
+        }
+        .table-container {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid #263252;
+            border-radius: 16px;
+            overflow: hidden;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th {
+            background: rgba(59, 130, 246, 0.1);
+            padding: 16px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 1px solid #263252;
+            color: #3B82F6;
+        }
+        td {
+            padding: 16px;
+            border-bottom: 1px solid #263252;
+        }
+        tr:last-child td {
+            border-bottom: none;
+        }
+        tr:hover {
+            background: rgba(59, 130, 246, 0.05);
+        }
+        .action-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .action-login { background: rgba(34, 197, 94, 0.2); color: #86EFAC; }
+        .action-logout { background: rgba(239, 68, 68, 0.2); color: #FCA5A5; }
+        .action-upload { background: rgba(59, 130, 246, 0.2); color: #93C5FD; }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #94A3B8;
+        }
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 Activity Dashboard</h1>
+            <div class="header-actions">
+                <a href="/" class="btn btn-secondary">← Back to App</a>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <div class="stat-value">{{ total_count }}</div>
+                <div class="stat-label">Total Activities</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ activities|selectattr('action', 'equalto', 'LOGIN')|list|length }}</div>
+                <div class="stat-label">Logins</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">{{ activities|selectattr('action', 'equalto', 'UPLOAD_RESUMES')|list|length }}</div>
+                <div class="stat-label">Resume Uploads</div>
+            </div>
+        </div>
+
+        {% if activities %}
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>User Email</th>
+                        <th>Action</th>
+                        <th>Details</th>
+                        <th>IP Address</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for activity in activities %}
+                    <tr>
+                        <td><strong>{{ activity.readable_time }}</strong></td>
+                        <td>{{ activity.email }}</td>
+                        <td>
+                            <span class="action-badge action-{{ activity.action|lower }}">
+                                {{ activity.action }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if activity.action == 'UPLOAD_RESUMES' %}
+                                <small>{{ activity.details.file_count }} file(s)
+                                {% if activity.details.custom_jd %}📝 Custom JD{% endif %}
+                                {% if activity.details.custom_rubric %}📋 Custom Rubric{% endif %}
+                                </small>
+                            {% elif activity.action == 'LOGIN' %}
+                                <small>{{ activity.details.name }}</small>
+                            {% else %}
+                                <small>-</small>
+                            {% endif %}
+                        </td>
+                        <td><code style="font-size: 12px; color: #94A3B8;">{{ activity.ip_address }}</code></td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <div class="empty-state-icon">📭</div>
+            <h3>No activities yet</h3>
+            <p>Activities will appear here as users interact with the app</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>
+"""
 
 LOGIN_HTML = """
 <!DOCTYPE html>
@@ -633,6 +902,9 @@ def build_user_block(user):
     """Render the signed-in user chip + logout button for the app header."""
     name = escape(user.get('name') or user.get('email') or 'Logged In')
     picture = user.get('picture')
+    user_email = user.get('email', '')
+    is_admin = user_email in ADMIN_EMAILS
+
     avatar = (
         f'<img src="{escape(picture)}" alt="" class="profile-pic">'
         if picture else
@@ -640,10 +912,16 @@ def build_user_block(user):
         '<svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
         '<path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></span>'
     )
+
+    admin_link = ''
+    if is_admin:
+        admin_link = '<a href="/activity" class="admin-link" title="Activity Dashboard">📊</a>'
+
     return f"""
                 <div class="user-info">
                     {avatar}
                     <span class="user-name">{name}</span>
+                    {admin_link}
                     <a href="/logout" class="logout-btn">
                         <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
                         <span>Logout</span>
@@ -917,6 +1195,19 @@ def index():
             .logout-btn svg { width: 14px; height: 14px; stroke: currentColor; }
             .logout-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 18px rgba(37, 99, 235, 0.28); }
             .logout-btn:active { transform: translateY(0); }
+            .admin-link {
+                display: inline-flex; align-items: center; justify-content: center;
+                width: 32px; height: 32px; border-radius: 8px;
+                background: rgba(168, 85, 247, 0.1); color: #A855F7;
+                text-decoration: none; font-size: 16px;
+                transition: all 0.2s ease;
+                border: 1px solid rgba(168, 85, 247, 0.2);
+            }
+            .admin-link:hover {
+                background: rgba(168, 85, 247, 0.2);
+                border-color: rgba(168, 85, 247, 0.4);
+                transform: scale(1.05);
+            }
             @media (max-width: 640px) {
                 .user-name { display: none; }
                 .logout-btn span { display: none; }
@@ -1434,6 +1725,9 @@ PLACEHOLDER_USER
 def grade_resumes():
     global _last_results
 
+    # Get user email from session
+    user_email = session.get('user', {}).get('email', 'unknown')
+
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return jsonify({"error": "OPENAI_API_KEY not configured"}), 500
@@ -1445,6 +1739,13 @@ def grade_resumes():
     rubric = request.form.get('rubric', RUBRIC)
 
     uploaded_files = request.files.getlist('files')
+
+    # Log activity: file upload
+    log_activity(user_email, 'UPLOAD_RESUMES', {
+        'file_count': len(uploaded_files),
+        'custom_jd': job_description != JOB_DESCRIPTION,
+        'custom_rubric': rubric != RUBRIC
+    })
     client = OpenAI(api_key=api_key)
     results = []
 
@@ -1529,6 +1830,44 @@ def download():
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({"status": "healthy"}), 200
+
+
+@app.route('/activity', methods=['GET'])
+@admin_required
+def view_activity():
+    """View user activity log (admin only)"""
+    user_email = session.get('user', {}).get('email', 'unknown')
+    print(f'Fetching activity for admin: {user_email}', flush=True)
+
+    try:
+        print(f'Querying DynamoDB table: {ACTIVITY_TABLE_NAME}', flush=True)
+        # Query activities for all users
+        response = activity_table.scan(Limit=500)
+        all_activities = response.get('Items', [])
+        print(f'Found {len(all_activities)} activities in DynamoDB', flush=True)
+
+    except Exception as e:
+        # Fallback to local storage for development
+        print(f'DynamoDB unavailable ({type(e).__name__}), using local storage', flush=True)
+        all_activities = []
+        for email, activities in _LOCAL_ACTIVITIES.items():
+            all_activities.extend(activities)
+        print(f'Found {len(all_activities)} activities in local storage', flush=True)
+
+    # Sort by timestamp descending
+    all_activities = sorted(all_activities, key=lambda x: x.get('timestamp', 0), reverse=True)
+
+    # Convert timestamps to readable format
+    for activity in all_activities:
+        timestamp = activity.get('timestamp', 0)
+        activity['readable_time'] = datetime.fromtimestamp(timestamp / 1000).strftime('%Y-%m-%d %H:%M:%S')
+
+    activity_html = render_template_string(ACTIVITY_DASHBOARD_HTML,
+        admin_email=user_email,
+        activities=all_activities,
+        total_count=len(all_activities)
+    )
+    return activity_html, 200
 
 
 def lambda_handler(event, context):
