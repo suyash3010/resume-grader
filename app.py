@@ -56,11 +56,14 @@ activity_table = dynamodb.Table(ACTIVITY_TABLE_NAME)
 _LOCAL_ACTIVITIES = {}
 
 # Admin Configuration
+admin_emails_str = os.environ.get('ADMIN_EMAILS', '')
+print(f'ADMIN_EMAILS env var: "{admin_emails_str}"', flush=True)
 ADMIN_EMAILS = set(
-    email.strip() for email in os.environ.get('ADMIN_EMAILS', '').split(',')
+    email.strip() for email in admin_emails_str.split(',')
     if email.strip()
 )
-print(f'Admin emails loaded: {ADMIN_EMAILS}', flush=True)
+print(f'Admin emails set: {ADMIN_EMAILS}', flush=True)
+print(f'Admin emails count: {len(ADMIN_EMAILS)}', flush=True)
 
 _last_results = None
 
