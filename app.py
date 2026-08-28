@@ -66,12 +66,13 @@ def login_required(f):
 
 
 def get_login_url(redirect_uri):
-    """Generate Cognito login URL"""
+    """Generate Cognito login URL with prompt=login to force credential entry"""
     params = {
         'client_id': COGNITO_CLIENT_ID,
         'response_type': 'code',
         'scope': 'email openid',
         'redirect_uri': redirect_uri,
+        'prompt': 'login',  # Force Google to show login screen even if user is already logged in
     }
     return f'{COGNITO_AUTH_URL}?{urlencode(params)}'
 
