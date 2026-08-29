@@ -1754,6 +1754,7 @@ def grade_resumes():
 
     for file in uploaded_files:
         if not file or file.filename == '':
+            print(f"Skipping empty file")
             continue
 
         filename = secure_filename(file.filename)
@@ -1766,14 +1767,21 @@ def grade_resumes():
         elif filename.lower().endswith('.txt'):
             resume_text = extract_text_from_txt(file.stream)
         else:
+            print(f"Unsupported file format: {filename}")
             continue
 
-        if not resume_text.strip() or resume_text.startswith("Error"):
+        if not resume_text.strip():
+            print(f"Empty resume text for {filename}")
+            continue
+
+        if resume_text.startswith("Error"):
+            print(f"Extraction error for {filename}: {resume_text}")
             continue
 
         try:
             result = score_resume(client, resume_text, filename, job_description, rubric)
             results.append(result)
+            print(f"Successfully scored {filename}")
             time.sleep(0.3)
         except Exception as e:
             print(f"Error scoring {filename}: {e}")
