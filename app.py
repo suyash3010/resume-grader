@@ -329,9 +329,26 @@ def extract_text_from_pdf(file_obj):
     try:
         doc = pdfium.PdfDocument(file_obj)
         text = "\n".join(p.get_textpage().get_text_range() for p in doc)
-        return text
+        return normalize_text(text)
     except Exception as e:
         return f"Error extracting PDF: {str(e)}"
+
+
+def normalize_text(text):
+    """Convert Unicode characters to ASCII equivalents"""
+    replacements = {
+        '—': '-',  # em-dash
+        '–': '-',  # en-dash
+        '“': '"',  # left smart quote
+        '”': '"',  # right smart quote
+        '‘': "'",  # left single quote
+        '’': "'",  # right single quote
+        '•': '•',  # bullet
+        '\xa0': ' ',    # non-breaking space
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 
 def extract_text_from_docx(file_obj):
@@ -343,14 +360,16 @@ def extract_text_from_docx(file_obj):
                 for cell in row.cells:
                     if cell.text.strip():
                         text_parts.append(cell.text)
-        return "\n".join(text_parts)
+        text = "\n".join(text_parts)
+        return normalize_text(text)
     except Exception as e:
         return f"Error extracting DOCX: {str(e)}"
 
 
 def extract_text_from_txt(file_obj):
     try:
-        return file_obj.read().decode('utf-8')
+        text = file_obj.read().decode('utf-8')
+        return normalize_text(text)
     except Exception as e:
         return f"Error extracting TXT: {str(e)}"
 
