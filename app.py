@@ -1366,7 +1366,7 @@ def index():
             .remove-btn svg { width: 14px; height: 14px; stroke: currentColor; }
             .remove-btn:hover { background: var(--color-error-bg); }
 
-            button.primary {
+            button.primary, a.primary {
                 display: flex; align-items: center; justify-content: center; gap: 8px;
                 background: linear-gradient(135deg, var(--color-primary), var(--color-primary-dark));
                 color: var(--color-on-primary); border: none; padding: 15px 24px;
@@ -1374,15 +1374,15 @@ def index():
                 font-size: 15px; font-weight: 600; width: 100%; min-height: 48px;
                 transition: transform 0.15s ease, box-shadow 0.2s ease, opacity 0.2s ease;
             }
-            button.primary svg { width: 18px; height: 18px; stroke: currentColor; }
-            button.primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(37, 99, 235, 0.3); }
-            button.primary:active:not(:disabled) { transform: translateY(0); }
+            button.primary svg, a.primary svg { width: 18px; height: 18px; stroke: currentColor; }
+            button.primary:hover:not(:disabled), a.primary:hover { transform: translateY(-2px); box-shadow: 0 12px 24px rgba(37, 99, 235, 0.3); }
+            button.primary:active:not(:disabled), a.primary:active { transform: translateY(0); }
             button.primary:disabled { opacity: 0.45; cursor: not-allowed; }
 
             .download-btn {
-                background: linear-gradient(135deg, #16A34A, #15803D);
-                margin-top: var(--space-3); display: none; text-decoration: none;
-                width: auto; padding: 15px 32px;
+                background: linear-gradient(135deg, #16A34A, #15803D) !important;
+                margin-top: var(--space-3); display: none !important; text-decoration: none;
+                width: auto !important; padding: 12px 28px !important;
             }
             .download-btn:hover { box-shadow: 0 12px 24px rgba(21, 128, 61, 0.3) !important; }
 
