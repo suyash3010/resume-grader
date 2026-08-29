@@ -335,20 +335,9 @@ def extract_text_from_pdf(file_obj):
 
 
 def normalize_text(text):
-    """Convert Unicode characters to ASCII equivalents"""
-    replacements = {
-        '—': '-',  # em-dash
-        '–': '-',  # en-dash
-        '“': '"',  # left smart quote
-        '”': '"',  # right smart quote
-        '‘': "'",  # left single quote
-        '’': "'",  # right single quote
-        '•': '•',  # bullet
-        '\xa0': ' ',    # non-breaking space
-    }
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    return text
+    import unicodedata
+    nfkd = unicodedata.normalize('NFKD', text)
+    return nfkd.encode('ascii', 'ignore').decode('ascii')
 
 
 def extract_text_from_docx(file_obj):
@@ -361,7 +350,11 @@ def extract_text_from_docx(file_obj):
                     if cell.text.strip():
                         text_parts.append(cell.text)
         text = "\n".join(text_parts)
-        return normalize_text(text)
+        normalized = normalize_text(text)
+        print(f"[DEBUG] Original text length: {len(text)}, Normalized length: {len(normalized)}")
+        print(f"[DEBUG] Original text (first 100 chars): {repr(text[:100])}")
+        print(f"[DEBUG] Normalized text (first 100 chars): {repr(normalized[:100])}")
+        return normalized
     except Exception as e:
         return f"Error extracting DOCX: {str(e)}"
 
@@ -375,6 +368,14 @@ def extract_text_from_txt(file_obj):
 
 
 def score_resume(client, resume_text, filename, job_description, rubric):
+    # Debug: check for non-ASCII characters
+    try:
+        resume_text.encode('ascii')
+        print(f"[DEBUG] Resume text is pure ASCII: {len(resume_text)} chars")
+    except UnicodeEncodeError as e:
+        print(f"[DEBUG] Resume text has non-ASCII characters: {e}")
+        print(f"[DEBUG] Resume text (first 100 chars): {repr(resume_text[:100])}")
+
     prompt = PROMPT_TEMPLATE.format(jd=job_description, rubric=rubric, resume_text=resume_text)
 
     response = client.chat.completions.create(
@@ -1381,6 +1382,7 @@ def index():
             .download-btn {
                 background: linear-gradient(135deg, #16A34A, #15803D);
                 margin-top: var(--space-3); display: none; text-decoration: none;
+                width: auto; padding: 15px 32px;
             }
             .download-btn:hover { box-shadow: 0 12px 24px rgba(21, 128, 61, 0.3) !important; }
 
