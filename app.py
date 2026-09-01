@@ -336,8 +336,7 @@ def extract_text_from_pdf(file_obj):
 
 def normalize_text(text):
     import unicodedata
-    nfkd = unicodedata.normalize('NFKD', text)
-    return nfkd.encode('ascii', 'ignore').decode('ascii')
+    return unicodedata.normalize('NFKC', text)
 
 
 def extract_text_from_docx(file_obj):
@@ -350,11 +349,7 @@ def extract_text_from_docx(file_obj):
                     if cell.text.strip():
                         text_parts.append(cell.text)
         text = "\n".join(text_parts)
-        normalized = normalize_text(text)
-        print(f"[DEBUG] Original text length: {len(text)}, Normalized length: {len(normalized)}")
-        print(f"[DEBUG] Original text (first 100 chars): {repr(text[:100])}")
-        print(f"[DEBUG] Normalized text (first 100 chars): {repr(normalized[:100])}")
-        return normalized
+        return normalize_text(text)
     except Exception as e:
         return f"Error extracting DOCX: {str(e)}"
 
@@ -368,14 +363,6 @@ def extract_text_from_txt(file_obj):
 
 
 def score_resume(client, resume_text, filename, job_description, rubric):
-    # Debug: check for non-ASCII characters
-    try:
-        resume_text.encode('ascii')
-        print(f"[DEBUG] Resume text is pure ASCII: {len(resume_text)} chars")
-    except UnicodeEncodeError as e:
-        print(f"[DEBUG] Resume text has non-ASCII characters: {e}")
-        print(f"[DEBUG] Resume text (first 100 chars): {repr(resume_text[:100])}")
-
     prompt = PROMPT_TEMPLATE.format(jd=job_description, rubric=rubric, resume_text=resume_text)
 
     response = client.chat.completions.create(
